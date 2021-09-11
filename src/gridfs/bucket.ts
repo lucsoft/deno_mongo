@@ -1,8 +1,9 @@
-import { assert, ObjectId } from "../../deps.ts";
+import { assert, Document, ObjectId } from "../../deps.ts";
 import { Collection } from "../collection/collection.ts";
 import { FindCursor } from "../collection/commands/find.ts";
 import { Database } from "../database.ts";
 import { Filter } from "../types.ts";
+import { GridFSUploadStreamProcessor } from "./upload.ts";
 import {
   Chunk,
   File,
@@ -12,19 +13,40 @@ import {
   GridFSUploadOptions,
 } from "../types/gridfs.ts";
 
-export class GridFSBucket {
-  #chunksCollection: Collection<Chunk>;
-  #fileCollection: Collection<File>;
+const DEFAULT_BUCKET_OPTIONS: GridFSBucketOptions = {
+  bucketName: "fs",
+  chunkSizeBytes: 255 * 1024, // 255KiB,
+};
 
+export class GridFSBucket {
+  #db: Database;
+  #options: GridFSBucketOptions;
+
+  #filesCollection: Collection<File>;
+  #chunksCollection: Collection<Chunk>;
+  #checkedIndexes: boolean;
   /**
    * Create a new GridFSBucket object on @db with the given @options.
    */
   constructor(
     db: Database,
-    options: GridFSBucketOptions = { bucketName: "fs" },
+    options?: GridFSBucketOptions,
   ) {
-    this.#chunksCollection = db.collection(options.bucketName + ".chunks");
-    this.#fileCollection = db.collection(options.bucketName + ".files");
+    this.#db = db;
+
+    this.#options = {
+      ...DEFAULT_BUCKET_OPTIONS,
+      ...options,
+    };
+
+    this.#chunksCollection = db.collection<Chunk>(
+      this.#options.bucketName + ".chunks",
+    );
+    this.#filesCollection = db.collection<File>(
+      this.#options.bucketName + ".files",
+    );
+
+    this.#checkedIndexes = false;
   }
 
   /**
@@ -40,8 +62,22 @@ export class GridFSBucket {
   openUploadStream(
     filename: string,
     options?: GridFSUploadOptions,
-  ): WritableStream {
-    return new WritableStream();
+  ) {
+    if (!this.#checkedIndexes) {
+      this.#checkIndexes();
+    }
+
+    const streamProcessor = new GridFSUploadStreamProcessor(
+      {
+        filesCollection: this.#filesCollection,
+        chunksCollection: this.#chunksCollection,
+        chunkSizeBytes: this.#options.chunkSizeBytes!,
+      },
+      filename,
+      options,
+    );
+
+    return streamProcessor.writable;
   }
 
   /**
@@ -118,7 +154,7 @@ export class GridFSBucket {
    * associated chunks from a GridFS bucket.
    */
   async delete(id: FileId) {
-    await this.#fileCollection.deleteOne({ _id: id });
+    await this.#filesCollection.deleteOne({ _id: id });
     const response = await this.#chunksCollection.deleteMany({ files_id: id });
     assert(response, `File not found for id ${id}`);
   }
@@ -130,6 +166,89 @@ export class GridFSBucket {
     filter: Filter<File>,
     options?: GridFSFindOptions,
   ): FindCursor<File> {
-    return this.#fileCollection.find(filter ?? {}, options ?? {});
+    return this.#filesCollection.find(filter ?? {}, options ?? {});
+  }
+
+  async #checkIndexes() {
+    const filesCollectionIsEmpty = !await this.#filesCollection.findOne({}, {
+      projection: { _id: 1 },
+    });
+
+    const chunksCollectionIsEmpty = !await this.#chunksCollection.findOne({}, {
+      projection: { _id: 1 },
+    });
+
+    if (filesCollectionIsEmpty || chunksCollectionIsEmpty) {
+      // At least one collection is empty so we create indexes
+      this.#createFileIndex();
+      this.#createChunksIndex();
+      this.#checkedIndexes = true;
+      return;
+    }
+
+    // Now check that the right indexes are there
+    const fileIndexes = await this.#filesCollection.listIndexes().toArray();
+    let hasFileIndex = false;
+
+    if (fileIndexes) {
+      fileIndexes.forEach((index: Document) => {
+        const keys = Object.keys(index.key);
+        if (
+          keys.length === 2 && index.key.filename === 1 &&
+          index.key.uploadDate === 1
+        ) {
+          hasFileIndex = true;
+        }
+      });
+    }
+
+    if (!hasFileIndex) {
+      this.#createFileIndex();
+    }
+
+    const chunkIndexes = await this.#chunksCollection.listIndexes().toArray();
+    let hasChunksIndex = false;
+
+    if (chunkIndexes) {
+      chunkIndexes.forEach((index: Document) => {
+        const keys = Object.keys(index.key);
+        if (
+          keys.length === 2 && index.key.filename === 1 &&
+          index.key.uploadDate === 1 && index.options.unique
+        ) {
+          hasChunksIndex = true;
+        }
+      });
+    }
+
+    if (!hasChunksIndex) {
+      this.#createChunksIndex();
+    }
+    this.#checkedIndexes = true;
+  }
+
+  #createFileIndex() {
+    const index = { filename: 1, uploadDate: 1 };
+
+    return this.#filesCollection.createIndexes({
+      indexes: [{
+        name: "gridFSFiles",
+        key: index,
+        background: false,
+      }],
+    });
+  }
+
+  #createChunksIndex() {
+    const index = { "files_id": 1, n: 1 };
+
+    return this.#chunksCollection.createIndexes({
+      indexes: [{
+        name: "gridFSFiles",
+        key: index,
+        unique: true,
+        background: false,
+      }],
+    });
   }
 }

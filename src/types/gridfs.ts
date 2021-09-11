@@ -1,4 +1,5 @@
 import { ObjectId } from "../../deps.ts";
+import { Collection } from "../collection/mod.ts";
 import { Document, ReadPreference } from "../types.ts";
 import { ReadConcern, WriteConcern } from "../types/readWriteConcern.ts";
 
@@ -6,7 +7,7 @@ export type FileId = ObjectId;
 
 export interface Chunk {
   _id: ObjectId;
-  files_id: ObjectId;
+  "files_id": ObjectId;
   n: number;
   data: Blob | Uint8Array;
 }
@@ -17,14 +18,14 @@ export interface File {
   chunkSize: number;
   uploadDate: Date;
   filename: string;
-  metadata: Document;
+  metadata?: Document;
 }
 
 export interface GridFSBucketOptions {
   /**
    * The bucket name. Defaults to 'fs'.
    */
-  bucketName: string;
+  bucketName?: string;
 
   /**
    * The chunk size in bytes. Defaults to 255 KiB.
@@ -105,4 +106,10 @@ export class GridFSFindOptions {
    * The order by which to sort results. Defaults to not sorting.
    */
   sort?: Document;
+}
+
+export interface BucketInfo {
+  filesCollection: Collection<File>;
+  chunksCollection: Collection<Chunk>;
+  chunkSizeBytes: number;
 }
