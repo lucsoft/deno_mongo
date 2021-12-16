@@ -12,6 +12,7 @@ export default function workerTests() {
       importWorker.onmessage = (e) => p.resolve(e.data);
       importWorker.postMessage("startWorker");
       assertEquals(await p, "done");
+      importWorker.terminate();
     },
   });
 }
