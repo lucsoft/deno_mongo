@@ -4,12 +4,12 @@ on: [push, pull_request]
 
 jobs:
   build:
-    name: ubuntu-latest
-    runs-on: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
 
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest]
         mongo: ["4.0", "4.2", "4.4", "5.0"]
     steps:
       - name: Setup Environment
